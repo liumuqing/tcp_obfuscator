@@ -74,3 +74,4 @@ $ curl http://1.1.50.188 -v -H Host:www.baidu.com
 ```
 
 5. let's check the tcp stream in wireshark
+![wireshark](./wireshark.png)
