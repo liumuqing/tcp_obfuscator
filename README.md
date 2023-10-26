@@ -1,3 +1,14 @@
+## tun\_obfuscator
+
+obfuscator/hide your tcp stream in wireshark!
+
+## Note
+
+1. Don't use this project in a VM that NATed by OSX (bridged vm is ok). Seems the OSX kernel will reassemble those obfuscated segments.
+2. check [route_localnet](https://github.com/kubernetes/kubernetes/issues/90259) if you want to use this project to mirror from/to 127.0.0.0/8
+
+## Let's try
+
 1. which servers you want to connect to?
 
 ```
