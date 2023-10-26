@@ -1,0 +1,16 @@
+[package]
+name = "tun_obfuscator"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pnet = "0.34.0"
+tokio-tun = "0.9.1"
+tokio = { version = "1.33.0", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.17"
+clap = { version = "4.4.7", features = ["derive", "env"] }
+ipnet = "2.9.0"
+ctrlc = "3.4.1"
