@@ -5,6 +5,8 @@ hide your tcp stream from wireshark!
 ## Note
 
 1. Don't use this project in a VM that NATed by OSX (bridged vm is ok). Seems the OSX kernel will reassemble those obfuscated segments.
+   1. because osx will drops ooo tcp segments
+   2. check [this link](https://github.com/canonical/multipass/issues/3038#issuecomment-1665807689)
 2. check [route_localnet](https://github.com/kubernetes/kubernetes/issues/90259) if you want to use this project to mirror from/to 127.0.0.0/8
 
 ## Let's try
