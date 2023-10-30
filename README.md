@@ -1,6 +1,6 @@
 ## tun\_obfuscator
 
-obfuscator/hide your tcp stream in wireshark!
+hide your tcp stream from wireshark!
 
 ## Note
 
