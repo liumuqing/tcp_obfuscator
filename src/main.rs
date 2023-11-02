@@ -149,8 +149,10 @@ fn system(cmdline: &str, allow_fail: bool) -> bool {
     return status.success();
 }
 
-fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str, gateway: &str) -> bool {
+//fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str, gateway: &str) -> bool {
+fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str) {
 
+    system(&format!("iptables -I DOCKER-USER -j ACCEPT"), true); // special hack for docker env
     system(&format!("sysctl -w net.ipv4.ip_forward=1"), false);
 
     system(&format!("ip addr add {} dev {}", network_mapping.dst_virtual.to_string(), tun_name), false);
@@ -158,7 +160,7 @@ fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, publi
         system(&format!("ip addr add {} dev {}", network_mapping.src_virtual.to_string(), tun_name), false);
     }
     system(&format!("ip addr add {} dev {}", network_mapping.dst_local.to_string(), tun_name), false);
-    let has_route = system(&format!("ip route add {} via {}", network_mapping.dst.to_string(), gateway), true);
+    //let has_route = system(&format!("ip route add {} via {}", network_mapping.dst.to_string(), gateway), true);
     //system(&format!("iptables -t nat -D POSTROUTING -s {} -o {} -j MASQUERADE", network_mapping.src_virtual.trunc().to_string(), interface), true);
     //system(&format!("iptables -t nat -A POSTROUTING -s {} -o {} -j MASQUERADE", network_mapping.src_virtual.trunc().to_string(), interface), false);
     //system(&format!("iptables -t nat -D POSTROUTING -o {} -j MASQUERADE", tun_name), true);
@@ -174,18 +176,19 @@ fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, publi
     system(&format!("sudo iptables -t nat -A POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_local.trunc().to_string(), interface, public_ip), false);
 
     info!("setup tun and iptables done.");
-    return has_route;
+    //return has_route;
 }
 
-fn uninit_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str, gateway: &str, has_route: bool) {
+//fn uninit_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str, gateway: &str, has_route: bool) {
+fn uninit_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str) {
     system(&format!("ip addr del {} dev {}", network_mapping.src_virtual.to_string(), tun_name), true);
     if network_mapping.dst_virtual != network_mapping.src_virtual {
         system(&format!("ip addr del {} dev {}", network_mapping.dst_virtual.to_string(), tun_name), true);
     }
     system(&format!("ip addr del {} dev {}", network_mapping.dst_local.to_string(), tun_name), true);
-    if has_route {
-        system(&format!("ip route del {} via {}", network_mapping.dst.to_string(), gateway), false);
-    }
+    //if has_route {
+    //    system(&format!("ip route del {} via {}", network_mapping.dst.to_string(), gateway), false);
+    //}
     system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.src_virtual.trunc().to_string(), interface, public_ip), true);
     if network_mapping.dst_virtual != network_mapping.src_virtual {
         system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_virtual.trunc().to_string(), interface, public_ip), true);
@@ -228,9 +231,9 @@ struct Args {
     #[arg(short, long)]
     public_ip: String,
 
-    /// the public ip address, e.g 172.16.90.128, etc.
-    #[arg(short, long)]
-    gateway: String,
+    // /// the public ip address, e.g 172.16.90.128, etc.
+    // #[arg(short, long)]
+    // gateway: String,
 }
 
 
@@ -279,7 +282,8 @@ async fn main() {
         });
     info!("tun created, name: {}", tun.name());
 
-    let has_route = init_tun(&net_mapping, tun.name(), &args.interface, &args.public_ip, &args.gateway);
+    //let has_route = init_tun(&net_mapping, tun.name(), &args.interface, &args.public_ip, &args.gateway);
+    init_tun(&net_mapping, tun.name(), &args.interface, &args.public_ip);
 
     let net_mapping_to_move = net_mapping.clone();
     let tun_name = tun.name().to_owned();
@@ -297,12 +301,14 @@ async fn main() {
 
             let Some(ipv4) = Ipv4Packet::new(&mut buf) else { continue } ;
             if ipv4.get_version() != 4 { continue }
+
+            trace!("{:?}", ipv4);
+
             if ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp { continue }
 
             let Some(_tcp) = TcpPacket::new(ipv4.payload()) else {continue};
 
             // forward this packet
-            trace!("{:?}", ipv4);
             let writer = writer.clone();
             tokio::task::spawn(
                 nat_packet(net_mapping.clone(), writer, buf)
@@ -311,6 +317,6 @@ async fn main() {
     } );
 
     tokio::signal::ctrl_c().await.expect("failed to listen for event");
-    uninit_tun(&net_mapping_to_move, &tun_name, &args.interface, &args.public_ip, &args.gateway, has_route);
-    info!("bye!");
+    //uninit_tun(&net_mapping_to_move, &tun_name, &args.interface, &args.public_ip, &args.gateway, has_route);
+    uninit_tun(&net_mapping_to_move, &tun_name, &args.interface, &args.public_ip);
 }
