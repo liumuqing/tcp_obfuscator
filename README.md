@@ -41,7 +41,7 @@ $ ip addr
 
 3. start a terminal and run the obfuscator:
 ```
-# ./target/debug/tun_obfuscator -l 1.1.0.0/16 -r 180.101.0.0/16 -i ens160 -p 192.168.43.83
+sudo RUST_LOG=trace ./target/debug/tun_obfuscator --dst 180.101.50.0/24 --dst-virtual 1.1.1.0/24 --src 192.168.43.0/24 --src-virtual 2.2.2.0/24 --interface lima0 --public-ip 192.168.43.194 --gateway 192.168.43.1
 2023-10-26T12:21:10.897437Z  INFO tun_obfuscator: creating tun...
 2023-10-26T12:21:10.897660Z  INFO tun_obfuscator: tun created, name: obfuscator_tun
 2023-10-26T12:21:10.897668Z  INFO tun_obfuscator: executing `sysctl -w net.ipv4.ip_forward=1`
