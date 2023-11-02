@@ -27,6 +27,7 @@ struct NetMapping {
     src: Ipv4Net,
     src_virtual: Ipv4Net,
     dst_virtual: Ipv4Net,
+    dst_local: Ipv4Net,
 }
 
 async fn nat_packet(network_mapping: NetMapping, writer: Arc<Mutex<WriteHalf<Tun>>>, buf: Vec<u8>) {
@@ -52,7 +53,7 @@ async fn nat_packet(network_mapping: NetMapping, writer: Arc<Mutex<WriteHalf<Tun
         let new_dest = Ipv4Addr::from_bits((ipv4.get_destination().to_bits() & network_mapping.dst_virtual.hostmask().to_bits()) | network_mapping.dst.network().to_bits());
         new_ipv4.set_destination(new_dest);
 
-        let new_src = Ipv4Addr::from_bits((ipv4.get_destination().to_bits() & network_mapping.dst.hostmask().to_bits()) | network_mapping.dst_virtual.network().to_bits());
+        let new_src = Ipv4Addr::from_bits((ipv4.get_destination().to_bits() & network_mapping.dst.hostmask().to_bits()) | network_mapping.dst_local.network().to_bits());
         new_ipv4.set_source(new_src);
         direction_forward = true;
     }
@@ -64,7 +65,7 @@ async fn nat_packet(network_mapping: NetMapping, writer: Arc<Mutex<WriteHalf<Tun
         let new_src = Ipv4Addr::from_bits((ipv4.get_source().to_bits() & network_mapping.dst.hostmask().to_bits()) | network_mapping.dst_virtual.network().to_bits());
         new_ipv4.set_source(new_src);
     }
-    else if network_mapping.dst.contains(&ipv4.get_source()) && network_mapping.dst_virtual.contains(&ipv4.get_destination()) {
+    else if network_mapping.dst.contains(&ipv4.get_source()) && network_mapping.dst_local.contains(&ipv4.get_destination()) {
         let new_dest = network_mapping.dst_virtual.network();
         new_ipv4.set_destination(new_dest);
 
@@ -156,6 +157,7 @@ fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, publi
     if network_mapping.dst_virtual != network_mapping.src_virtual {
         system(&format!("ip addr add {} dev {}", network_mapping.src_virtual.to_string(), tun_name), false);
     }
+    system(&format!("ip addr add {} dev {}", network_mapping.dst_local.to_string(), tun_name), false);
     let has_route = system(&format!("ip route add {} via {}", network_mapping.dst.to_string(), gateway), true);
     //system(&format!("iptables -t nat -D POSTROUTING -s {} -o {} -j MASQUERADE", network_mapping.src_virtual.trunc().to_string(), interface), true);
     //system(&format!("iptables -t nat -A POSTROUTING -s {} -o {} -j MASQUERADE", network_mapping.src_virtual.trunc().to_string(), interface), false);
@@ -168,6 +170,8 @@ fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, publi
         system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_virtual.trunc().to_string(), interface, public_ip), true);
         system(&format!("sudo iptables -t nat -A POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_virtual.trunc().to_string(), interface, public_ip), false);
     }
+    system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_local.trunc().to_string(), interface, public_ip), true);
+    system(&format!("sudo iptables -t nat -A POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_local.trunc().to_string(), interface, public_ip), false);
 
     info!("setup tun and iptables done.");
     return has_route;
@@ -178,6 +182,7 @@ fn uninit_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, pub
     if network_mapping.dst_virtual != network_mapping.src_virtual {
         system(&format!("ip addr del {} dev {}", network_mapping.dst_virtual.to_string(), tun_name), true);
     }
+    system(&format!("ip addr del {} dev {}", network_mapping.dst_local.to_string(), tun_name), true);
     if has_route {
         system(&format!("ip route del {} via {}", network_mapping.dst.to_string(), gateway), false);
     }
@@ -185,6 +190,7 @@ fn uninit_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, pub
     if network_mapping.dst_virtual != network_mapping.src_virtual {
         system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_virtual.trunc().to_string(), interface, public_ip), true);
     }
+    system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.dst_local.trunc().to_string(), interface, public_ip), true);
 }
 
 use clap::Parser;
@@ -200,6 +206,10 @@ struct Args {
     /// the target network, e.g 192.168.0.0/16
     #[arg(long)]
     dst_virtual: String,
+
+    /// the target network, e.g 192.168.0.0/16
+    #[arg(long)]
+    dst_local: String,
 
     /// the local network, with a local address. e.g 127.168.0.0/16
     #[arg(long)]
@@ -233,6 +243,7 @@ async fn main() {
 
     let dst =  args.dst.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", args.dst); exit(1);});
     let dst_virtual =  args.dst_virtual.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", args.dst_virtual); exit(1);});
+    let dst_local =  args.dst_local.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", args.dst_local); exit(1);});
     let src = match args.src {
         Some(src) => src.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", src); exit(1);}),
         None => dst_virtual,
@@ -247,6 +258,7 @@ async fn main() {
         src: src,
         src_virtual: src_virtual,
         dst_virtual: dst_virtual,
+        dst_local: dst_local,
     };
 
     assert!(net_mapping.src.hostmask() == net_mapping.src_virtual.hostmask());
