@@ -19,12 +19,14 @@ use std::sync::Arc;
 use std::process::exit;
 use tokio::sync::Mutex;
 
-use tracing::{info, error};
+use tracing::{trace, info, error};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct NetMapping {
-    local: Ipv4Net,
-    remote: Ipv4Net,
+    dst: Ipv4Net,
+    src: Ipv4Net,
+    src_virtual: Ipv4Net,
+    dst_virtual: Ipv4Net,
 }
 
 async fn nat_packet(network_mapping: NetMapping, writer: Arc<Mutex<WriteHalf<Tun>>>, buf: Vec<u8>) {
@@ -37,18 +39,29 @@ async fn nat_packet(network_mapping: NetMapping, writer: Arc<Mutex<WriteHalf<Tun
     new_ipv4.clone_from(&ipv4);
 
     let mut direction_forward = false;
-    if network_mapping.local.contains(&ipv4.get_destination()) && ipv4.get_source() == network_mapping.local.addr() {
-        let new_dest = Ipv4Addr::from_bits((ipv4.get_destination().to_bits() & network_mapping.local.hostmask().to_bits()) | network_mapping.remote.network().to_bits());
+
+    if network_mapping.dst_virtual.contains(&ipv4.get_destination()) && network_mapping.src.contains(&ipv4.get_source()) {
+        let new_dest = Ipv4Addr::from_bits((ipv4.get_destination().to_bits() & network_mapping.dst_virtual.hostmask().to_bits()) | network_mapping.dst.network().to_bits());
         new_ipv4.set_destination(new_dest);
-        new_ipv4.set_source(ipv4.get_destination());
+
+        let new_src = Ipv4Addr::from_bits((ipv4.get_source().to_bits() & network_mapping.src.hostmask().to_bits()) | network_mapping.src_virtual.network().to_bits());
+        new_ipv4.set_source(new_src);
         direction_forward = true;
     }
 
-    if network_mapping.remote.contains(&ipv4.get_source()) && network_mapping.local.contains(&ipv4.get_destination()) {
-        let new_source= Ipv4Addr::from_bits((ipv4.get_source().to_bits() & network_mapping.remote.hostmask().to_bits()) | network_mapping.local.network().to_bits());
-        new_ipv4.set_source(new_source);
-        new_ipv4.set_destination(network_mapping.local.addr());
+    else if network_mapping.src_virtual.contains(&ipv4.get_destination()) && network_mapping.dst.contains(&ipv4.get_source()) {
+        let new_dest = Ipv4Addr::from_bits((ipv4.get_destination().to_bits() & network_mapping.src_virtual.hostmask().to_bits()) | network_mapping.src.network().to_bits());
+        new_ipv4.set_destination(new_dest);
+
+        let new_src = Ipv4Addr::from_bits((ipv4.get_source().to_bits() & network_mapping.dst.hostmask().to_bits()) | network_mapping.dst_virtual.network().to_bits());
+        new_ipv4.set_source(new_src);
     }
+    else {
+        trace!("drop ipv4 {:?}", ipv4);
+        return
+    }
+    trace!("new ipv4 {:?}", new_ipv4);
+
     if (!direction_forward) || 
         (tcp.get_flags() & (TcpFlags::SYN | TcpFlags::FIN | TcpFlags::RST | TcpFlags::URG | TcpFlags::CWR | TcpFlags::ECE)) != 0 || 
         tcp.payload().len() <= 2 {
@@ -119,24 +132,32 @@ fn system(cmdline: &str, allow_fail: bool) {
     }
 }
 
-fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str) {
+fn init_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str, gateway: &str) {
 
     system(&format!("sysctl -w net.ipv4.ip_forward=1"), false);
 
-    system(&format!("ip addr add {} dev {}", network_mapping.local.to_string(), tun_name), false);
-    system(&format!("iptables -t nat -D POSTROUTING -o {} -j MASQUERADE", tun_name), true);
-    system(&format!("iptables -t nat -A POSTROUTING -o {} -j MASQUERADE", tun_name), false);
+    system(&format!("ip addr add {} dev {}", network_mapping.dst_virtual.to_string(), tun_name), false);
+    if network_mapping.dst_virtual != network_mapping.src_virtual {
+        system(&format!("ip addr add {} dev {}", network_mapping.src_virtual.to_string(), tun_name), false);
+    }
+    system(&format!("ip route add {} via {}", network_mapping.dst.to_string(), gateway), false);
+    system(&format!("iptables -t nat -D POSTROUTING -s {} -o {} -j MASQUERADE", network_mapping.src_virtual.trunc().to_string(), interface), true);
+    system(&format!("iptables -t nat -A POSTROUTING -s {} -o {} -j MASQUERADE", network_mapping.src_virtual.trunc().to_string(), interface), false);
 
-    system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.local.trunc().to_string(), interface, public_ip), true);
-    system(&format!("sudo iptables -t nat -A POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.local.trunc().to_string(), interface, public_ip), false);
+    //system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.src_virtual.trunc().to_string(), interface, public_ip), true);
+    //system(&format!("sudo iptables -t nat -A POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.src_virtual.trunc().to_string(), interface, public_ip), false);
 
     info!("setup tun and iptables done.");
 }
 
-fn uninit_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str) {
-    system(&format!("ip addr del {} dev {}", network_mapping.local.to_string(), tun_name), true);
-    system(&format!("iptables -t nat -D POSTROUTING -o {} -j MASQUERADE", tun_name), true);
-    system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.local.trunc().to_string(), interface, public_ip), true);
+fn uninit_tun(network_mapping: &NetMapping, tun_name: &str, interface: &str, public_ip: &str, gateway: &str) {
+    system(&format!("ip addr del {} dev {}", network_mapping.src_virtual.to_string(), tun_name), true);
+    if network_mapping.dst_virtual != network_mapping.src_virtual {
+        system(&format!("ip addr del {} dev {}", network_mapping.dst_virtual.to_string(), tun_name), true);
+    }
+    system(&format!("ip route del {} via {}", network_mapping.dst.to_string(), gateway), false);
+    system(&format!("iptables -t nat -D POSTROUTING -s {} -o {} -j MASQUERADE", network_mapping.src_virtual.trunc().to_string(), interface), true);
+    //system(&format!("sudo iptables -t nat -D POSTROUTING -s {} -o {} -j SNAT --to {}", network_mapping.src_virtual.trunc().to_string(), interface, public_ip), true);
 }
 
 use clap::Parser;
@@ -145,13 +166,21 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// the remote network, e.g 192.168.0.0/16
-    #[arg(short, long)]
-    remote: String,
+    /// the target network, e.g 192.168.0.0/16
+    #[arg(long)]
+    dst: String,
+
+    /// the target network, e.g 192.168.0.0/16
+    #[arg(long)]
+    dst_virtual: String,
 
     /// the local network, with a local address. e.g 127.168.0.0/16
-    #[arg(short, long)]
-    local: String,
+    #[arg(long)]
+    src: Option<String>,
+
+    /// the local network, with a local address. e.g 127.168.0.0/16
+    #[arg(long)]
+    src_virtual: Option<String>,
 
 
     /// the public interface, e.g eth1, ens160, etc.
@@ -161,6 +190,10 @@ struct Args {
     /// the public ip address, e.g 172.16.90.128, etc.
     #[arg(short, long)]
     public_ip: String,
+
+    /// the public ip address, e.g 172.16.90.128, etc.
+    #[arg(short, long)]
+    gateway: String,
 }
 
 
@@ -171,14 +204,26 @@ async fn main() {
 
     let args = Args::parse();
 
-    let net_mapping = NetMapping {
-        local: args.local.parse().unwrap_or_else(|_|{error!("cannot parse local network `{}`", args.local); exit(1);}),
-        remote: args.remote.parse().unwrap_or_else(|_|{error!("cannot parse remote network `{}`", args.remote); exit(1);}),
+    let dst =  args.dst.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", args.dst); exit(1);});
+    let dst_virtual =  args.dst_virtual.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", args.dst_virtual); exit(1);});
+    let src = match args.src {
+        Some(src) => src.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", src); exit(1);}),
+        None => dst_virtual,
     };
-    if net_mapping.remote.trunc() != net_mapping.remote {
-        error!("remote network should be a pure network (e.g {})", net_mapping.remote.trunc());
-        exit(1);
-    }
+    let src_virtual = match args.src_virtual {
+        Some(src_virtual) => src_virtual.parse().unwrap_or_else(|_|{error!("cannot parse network `{}`", src_virtual); exit(1);}),
+        None => dst_virtual,
+    };
+
+    let net_mapping  = NetMapping {
+        dst: dst,
+        src: src,
+        src_virtual: src_virtual,
+        dst_virtual: dst_virtual,
+    };
+
+    assert!(net_mapping.src.hostmask() == net_mapping.src_virtual.hostmask());
+    assert!(net_mapping.dst.hostmask() == net_mapping.dst_virtual.hostmask());
 
 
 
@@ -195,7 +240,7 @@ async fn main() {
         });
     info!("tun created, name: {}", tun.name());
 
-    init_tun(&net_mapping, tun.name(), &args.interface, &args.public_ip);
+    init_tun(&net_mapping, tun.name(), &args.interface, &args.public_ip, &args.gateway);
     
     let net_mapping_to_move = net_mapping.clone();
     let tun_name = tun.name().to_owned();
@@ -226,6 +271,6 @@ async fn main() {
     } );
 
     tokio::signal::ctrl_c().await.expect("failed to listen for event");
-    uninit_tun(&net_mapping_to_move, &tun_name, &args.interface, &args.public_ip);
+    uninit_tun(&net_mapping_to_move, &tun_name, &args.interface, &args.public_ip, &args.gateway);
     info!("bye!");
 }
